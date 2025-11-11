@@ -92,6 +92,8 @@ contract MarketInvest is Pausable, Ownable {
     /// @param payAmount The amount of ETH paid to the claimant
     event claimed(uint256 payAmount);
 
+    event naturalHazardIsNotAchived(string);
+
     /// @notice Error thrown when an action is attempted after a time window has passed
     /// @param lastDeposited Timestamp of last deposit used in the time check
     error timePassed(uint256 lastDeposited);
@@ -106,6 +108,18 @@ contract MarketInvest is Pausable, Ownable {
     uint256 public constant MONTH_TIME = 30 days;
     /// @notice The minimum market price threshold used in claim evaluation (example value in wei)
     uint256 public constant MIN_MARKET_CLAIM = 0.5 ether;
+    /// @notice BNB token address used for price feed queries in market crash claims
+    address public constant BNB_ADDRESS = 0x0567F2323251f0Aab15C8dFb1967E4e8A7D42aeE;
+
+    /// @notice Minimum water level threshold for natural disaster claims (below this triggers payout)
+    uint256 public constant MIN_WWATERFALL = 20;
+    /// @notice Maximum water level threshold for natural disaster claims (above this triggers payout)
+    uint256 public constant MAX_WATERFALL = 100;
+
+    /// @notice Minimum stablecoin peg ratio (0.97 = $0.97) - below this triggers depeg claims
+    uint256 public constant MIN_STABLE_COIN_PEG = 0.97;
+    /// @notice USDT token address used for stablecoin depeg price feed queries
+    address public constant USDT_ADDRESS =  0x3E7d1eAB13ad0104d2750B8863b489D65364e32D;
 
     /// @notice Fee configuration: MONTHLY_FEE expressed in basis points out of TOTAL_BPS
     uint256 public constant MONTHLY_FEE = 100;
@@ -141,11 +155,19 @@ contract MarketInvest is Pausable, Ownable {
      * @notice Purchase a new policy for a specified market event type.
      * @param expiry Unix timestamp when the policy should expire (must be in the future).
      * @param mType The MarketType enum value selecting which risk the policy covers.
-     * @dev Caller must send exactly `MARKET_MONTHLY_SUBSCRIPTION` as `msg.value`. The function
-     *      deducts fees based on `MONTHLY_FEE/TOTAL_BPS`, forwards fees to the owner, increments
-     *      `policyCount`, stores the new `buyMarketPolicy` struct in `marketPolicy`, and emits
-     *      `marketPolicyPurchased`. Reverts if inputs are invalid.
-     */
+     *
+     * @dev Behavior and effects:
+     *  - Caller MUST send exactly `MARKET_MONTHLY_SUBSCRIPTION` in `msg.value`.
+     *  - The function computes `fees = (msg.value * MONTHLY_FEE) / TOTAL_BPS` and forwards `fees` to `owner()`.
+     *  - The remaining `netAmount = msg.value - fees` is stored on the new policy record as `depositAmount`.
+     *  - `policyCount` is incremented and used as the policy id; policy stored at `marketPolicy[policyCount]`.
+     *  - Emits `marketPolicyPurchased(policyId, marketType, user, depositAmount, lastDeosited, claimActive, expiry)`.
+     *
+     * @reverts
+     *  - if `msg.value != MARKET_MONTHLY_SUBSCRIPTION` (exact subscription required)
+     *  - if `expiry <= block.timestamp` (expiry must be in the future)
+     *  - if fee transfer to `owner()` fails
+     */ 
     function buyMarketPolicy(uint256 expiry, marketType mType) external payable {
         address user = msg.sender;
         require(msg.value == MARKET_MONTHLY_SUBSCRIPTION, "Msg.value is not equal to monthly SUBSCRIPTION");
@@ -175,13 +197,18 @@ contract MarketInvest is Pausable, Ownable {
     /**
      * @notice Top-up or renew an existing policy by paying the monthly subscription.
      * @param policyId The id of the policy to invest in.
-     * @dev Caller must be the owner of the policy. The function accepts `MARKET_MONTHLY_SUBSCRIPTION`,
-     *      deducts fees and forwards them to the contract owner, then updates the stored deposit and timestamp.
-     *      Emits `investedInPolicy` on success. Reverts on invalid policy id or incorrect caller.
+     *
+     * @dev Behavior and effects:
+     *  - Caller MUST be the policy owner (`marketPolicy[policyId].user == msg.sender`).
+     *  - Caller MUST send `MARKET_MONTHLY_SUBSCRIPTION` as `msg.value` (current deposit model).
+     *  - The function deducts `fees = (msg.value * MONTHLY_FEE) / TOTAL_BPS` and forwards them to `owner()`.
+     *  - `netAmount = msg.value - fees` is added to `marketPolicy[policyId].depositAmount` and `lastDeosited` is updated.
+     *  - Emits `investedInPolicy(policyId, user, depositAmount, lastDeosited, claimActive, expiry)`.
      */
+
     function investPolicy(uint256 policyId) external payable {
         require(msg.value == MARKET_MONTHLY_SUBSCRIPTION, "money dosent align");
-        require(block.timestamp >= marketPolicy[policyId].expiry);
+        require(block.timestamp <= marketPolicy[policyId].expiry, "TIMESTAMP PASSED");
         require(policyId > 0 && marketPolicy[policyId].user != address(0), "policy dosent exist");
         require(marketPolicy[policyId].user == msg.sender, "not policy owner");
 
@@ -207,19 +234,24 @@ contract MarketInvest is Pausable, Ownable {
     /**
      * @notice Attempt to claim a payout for a MarketCrash policy.
      * @param policyId The id of the policy to claim against.
-     * @dev Verifies the caller is the policy owner, the policy is active and of type MarketCrash, the
-     *      subscription payment is recent (within `MONTH_TIME`) and the Chainlink price feed indicates
-     *      a qualifying market condition. If successful, the stored deposit is zeroed and a payout is
-     *      transferred to the claimant. Emits `claimed` on success or `priceNotReachedThreshold` when
-     *      the price condition is not met. Uses checks-effects-interactions ordering to reduce reentrancy risk.
+     *
+     * @dev Full behavior:
+     *  - Validates that the policy is active (`claimActive == true`) and the caller is the policy owner.
+     *  - Confirms the `marketType` is `MarketType.MarketCrash` (this function is specific to crash claims).
+     *  - Ensures the most recent subscription payment (`lastDeosited`) is within `MONTH_TIME` (i.e. user paid this month).
+     *  - Reads the Chainlink price from `priceFeed.latestRoundData()` and checks `updatedAt` freshness.
+     *  - If the price condition (e.g. `price < MIN_MARKET_CLAIM`) is met then:
+     *      - computes `payAmount` (example logic: `2 * depositAmount`), zeroes stored deposit and marks policy inactive,
+     *      - transfers `payAmount` to the claimant and emits `claimed(payAmount)`.
+     *  - Otherwise emits `priceNotReachedThreshold(price, MIN_MARKET_CLAIM)` and leaves policy state unchanged (or marks inactive depending on logic).
      */
     function claimMarketCrash(uint256 policyId) external {
-        require(marketPolicy[policyId].claimActive = true, "Claim Not avilable");
+        require(marketPolicy[policyId].claimActive == true, "Claim Not avilable");
         require(marketPolicy[policyId].user == msg.sender, "not a policy owner");
         require(marketPolicy[policyId].marketType == MarketType.MarketCrash);
 
         if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
-            (, uint256 price,, uint256 updatedAt,) = priceFeed.latestRoundData();
+            (, uint256 price,, uint256 updatedAt,) = priceFeed.latestRoundData(BNB_ADDRESS);
             require(block.timestamp - updatedAt < MONTH_TIME, "NOT A CORRECT TIME TO CLAIM");
             if (price < MIN_MARKET_CLAIM) {
                 uint256 amount = marketPolicy[policyId].depositAmount;
@@ -238,5 +270,107 @@ contract MarketInvest is Pausable, Ownable {
         require(success, "Pay Failed");
 
         emit claimed(payAmount);
+    }
+
+    /**
+     * @notice Claim payout for a NaturalDisaster policy based on water level conditions.
+     * @param waterlevel Current water level measurement to evaluate against thresholds.
+     * @param policyId The id of the NaturalDisaster policy to claim against.
+     * @dev Validates policy ownership, active status, and type. Checks if waterlevel is outside
+     *      the safe range (MIN_WWATERFALL to MAX_WATERFALL). If conditions are met, pays 2x
+     *      the deposit amount and deactivates the policy. Emits claimed or naturalHazardIsNotAchived.
+     */
+    function claimNaturalClamity(uint256 waterlevel, uint256 policyId) external {
+        require(marketPolicy[policyId].user == msg.sender, "Not a Policy Owner");
+        require(marketPolicy[policyId].claimActive == true, "CLAIM NOT ACTIVE");
+        require(marketPolicy[policyId].marketType == MarketType.NaturalDisaster);
+
+        if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
+
+            if (waterlevel <= MIN_WWATERFALL || waterlevel >= MAX_WATERFALL) {
+                uint256 amount = marketPolicy[policyId].depositAmount;
+                uint256 payAmount = 2 * amount;
+
+                marketPolicy[policyId].depositAmount = 0;
+                marketPolicy[policyId].claimActive = false;
+            } else {
+                emit naturalHazardIsNotAchived("Market Hazard Not Arrived");
+            }
+        } else {
+            marketPolicy[policyId].claimActive = false;
+        }
+
+        (bool ok,) = payable(msg.sender).call{value: payAmount}("");
+        require(success, "pay failed");
+
+        emit claimed(payAmount);
+    }
+
+    /**
+     * @notice Claim payout for a StablePleg policy when stablecoin depegs below threshold.
+     * @param policyId The id of the StablePleg policy to claim against.
+     * @dev Validates policy ownership, active status, and StablePleg type. Reads USDT price
+     *      from Chainlink oracle and checks if it's below MIN_STABLE_COIN_PEG (0.97). If depegged,
+     *      pays 2x deposit amount and deactivates policy. Requires recent subscription payment.
+     *      Emits claimed on success or priceNotReachedThreshold if peg is maintained.
+     */
+    function claimStableCoinPeg(uint256 policyId) external {
+        require(marketPolicy[policyId].claimActive == true, "Claim Not avilable");
+        require(marketPolicy[policyId].user == msg.sender, "not a policy owner");
+        require(marketPolicy[policyId].marketType == MarketType.StablePleg);
+
+        if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
+            (, uint256 price,, uint256 updatedAt,) = priceFeed.latestRoundData(USDT_ADDRESS);
+            require(block.timestamp - updatedAt < MONTH_TIME, "NOT A CORRECT TIME TO CLAIM");
+
+            if (price < MIN_STABLE_COIN_PEG) {
+                uint256 amount = marketPolicy[policyId].depositAmount;
+                uint256 payAmount = 2 * amount;
+            } else {
+                emit priceNotReachedThreshold(price, MIN_STABLE_COIN_PEG);
+            }
+
+            marketPolicy[policyId].depositAmount = 0;
+            marketPolicy[policyId].claimActive = false;
+        } else {
+            marketPolicy[policyId].claimActive = false;
+        }
+
+        (bool success,) = payable(msg.sender).call{value: payAmount}("");
+        require(success, "Pay Failed");
+
+        emit claimed(payAmount);
+    }
+
+    /**
+     * @notice Withdraw all ETH balance from the contract to the owner.
+     * @dev Only the contract owner can call this function. Transfers the entire
+     *      contract balance (address(this).balance) to the owner address using
+     *      the safe call pattern. Useful for collecting accumulated fees and funds.
+     */
+    function withdraw() external onlyOwner{
+        uint256 payAmount = address(this).balance;
+        (bool ok, ) = payable(owner()).call{value : payAmount}("");
+        require(ok, "failed");
+    }
+
+    /**
+     * @notice Pause the contract to stop all policy purchases and claims.
+     * @dev Only the contract owner can call this function. When paused, all functions
+     *      with whenNotPaused modifier will revert. Useful for emergency stops or maintenance.
+     *      Emits Paused event from OpenZeppelin Pausable contract.
+     */
+    function pauseContract() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause the contract to resume normal operations.
+     * @dev Only the contract owner can call this function. Restores normal functionality
+     *      for all policy-related operations. Should only be called after resolving any
+     *      issues that caused the pause. Emits Unpaused event from OpenZeppelin Pausable.
+     */
+    function unpauseContract() external onlyOwner {
+        _unpause();
     }
 }
