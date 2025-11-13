@@ -109,7 +109,7 @@ contract MarketInvest is Pausable, Ownable {
     /// @notice The minimum market price threshold used in claim evaluation (example value in wei)
     uint256 public constant MIN_MARKET_CLAIM = 0.5 ether;
     /// @notice BNB token address used for price feed queries in market crash claims
-    address public constant BNB_ADDRESS = 0x0567F2323251f0Aab15C8dFb1967E4e8A7D42aeE;
+    address public constant BNB_ADDRESS = 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE;
 
     /// @notice Minimum water level threshold for natural disaster claims (below this triggers payout)
     uint256 public constant MIN_WWATERFALL = 20;
@@ -119,7 +119,7 @@ contract MarketInvest is Pausable, Ownable {
     /// @notice Minimum stablecoin peg ratio (0.97 = $0.97) - below this triggers depeg claims
     uint256 public constant MIN_STABLE_COIN_PEG = 0.97;
     /// @notice USDT token address used for stablecoin depeg price feed queries
-    address public constant USDT_ADDRESS =  0x3E7d1eAB13ad0104d2750B8863b489D65364e32D;
+    address public constant USDT_ADDRESS = 0x3E7d1eAB13ad0104d2750B8863b489D65364e32D;
 
     /// @notice Fee configuration: MONTHLY_FEE expressed in basis points out of TOTAL_BPS
     uint256 public constant MONTHLY_FEE = 100;
@@ -167,7 +167,7 @@ contract MarketInvest is Pausable, Ownable {
      *  - if `msg.value != MARKET_MONTHLY_SUBSCRIPTION` (exact subscription required)
      *  - if `expiry <= block.timestamp` (expiry must be in the future)
      *  - if fee transfer to `owner()` fails
-     */ 
+     */
     function buyMarketPolicy(uint256 expiry, marketType mType) external payable {
         address user = msg.sender;
         require(msg.value == MARKET_MONTHLY_SUBSCRIPTION, "Msg.value is not equal to monthly SUBSCRIPTION");
@@ -205,7 +205,6 @@ contract MarketInvest is Pausable, Ownable {
      *  - `netAmount = msg.value - fees` is added to `marketPolicy[policyId].depositAmount` and `lastDeosited` is updated.
      *  - Emits `investedInPolicy(policyId, user, depositAmount, lastDeosited, claimActive, expiry)`.
      */
-
     function investPolicy(uint256 policyId) external payable {
         require(msg.value == MARKET_MONTHLY_SUBSCRIPTION, "money dosent align");
         require(block.timestamp <= marketPolicy[policyId].expiry, "TIMESTAMP PASSED");
@@ -286,7 +285,6 @@ contract MarketInvest is Pausable, Ownable {
         require(marketPolicy[policyId].marketType == MarketType.NaturalDisaster);
 
         if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
-
             if (waterlevel <= MIN_WWATERFALL || waterlevel >= MAX_WATERFALL) {
                 uint256 amount = marketPolicy[policyId].depositAmount;
                 uint256 payAmount = 2 * amount;
@@ -348,9 +346,9 @@ contract MarketInvest is Pausable, Ownable {
      *      contract balance (address(this).balance) to the owner address using
      *      the safe call pattern. Useful for collecting accumulated fees and funds.
      */
-    function withdraw() external onlyOwner{
+    function withdraw() external onlyOwner {
         uint256 payAmount = address(this).balance;
-        (bool ok, ) = payable(owner()).call{value : payAmount}("");
+        (bool ok,) = payable(owner()).call{value: payAmount}("");
         require(ok, "failed");
     }
 
