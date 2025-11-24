@@ -1,66 +1,110 @@
-## Foundry
+# **MarketInvest – Decentralized Market Insurance Contract**
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+MarketInvest is a smart contract that lets users buy insurance-like policies against different market risks such as market crashes, natural disasters, and stablecoin depegs. Users pay a monthly subscription and can claim payouts when the configured conditions are met.
 
-Foundry consists of:
+---
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## **Features**
 
-## Documentation
+* **Buy Policies** for:
 
-https://book.getfoundry.sh/
+  * Market Crash
+  * Natural Disaster
+  * Stablecoin Depeg
+* **Monthly Subscription Model**
+* **Automatic Fee Deduction** (sent to contract owner)
+* **Price Feed Integration (Chainlink)**
+* **Claim Payouts Automatically Based on Market Conditions**
+* **Admin Controls** – Pause, Unpause, Withdraw
 
-## Usage
+---
 
-### Build
+## **Policy Structure**
 
-```shell
-$ forge build
-```
+Each policy stores:
 
-### Test
+* Policy ID
+* User Address
+* Market Type
+* Deposit Amount
+* Last Deposit Timestamp
+* Active Status
+* Expiry Time
 
-```shell
-$ forge test
-```
+---
 
-### Format
+## **How It Works**
 
-```shell
-$ forge fmt
-```
+### **1. Buy a Policy**
 
-### Gas Snapshots
+* User pays **1 ETH** (monthly subscription).
+* Fee = 1% (configurable via BPS).
+* Net amount stored in policy.
+* Policy is created with unique ID and expiry.
 
-```shell
-$ forge snapshot
-```
+### **2. Invest (Renew or Top-up)**
 
-### Anvil
+* User pays the same subscription amount.
+* Deposits added to existing policy.
+* Timestamp updated.
 
-```shell
-$ anvil
-```
+### **3. Claim Conditions**
 
-### Deploy
+#### **Market Crash**
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+* Fetches BNB price via Chainlink.
+* If price < `MIN_MARKET_CLAIM`, payout = 2× deposit.
 
-### Cast
+#### **Natural Disaster**
 
-```shell
-$ cast <subcommand>
-```
+* User provides water level input.
+* If water level ≤ 20 or ≥ 100 → payout = 2× deposit.
 
-### Help
+#### **Stablecoin Depeg**
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+* Fetches USDT price.
+* If price < 0.97 → payout = 2× deposit.
+
+### **All claims require:**
+
+* Policy active
+* Claim within 30 days of last deposit
+* Policy not expired
+
+---
+
+## **Admin Functions**
+
+* **pauseContract()** – Stops buy/claim operations.
+* **unpauseContract()** – Resume operations.
+* **withdraw()** – Owner withdraws contract balance.
+
+---
+
+## **Events**
+
+* `marketPolicyPurchased`
+* `investedInPolicy`
+* `claimed`
+* `priceNotReachedThreshold`
+* `naturalHazardIsNotAchived`
+
+---
+
+## **Usage Flow**
+
+1. User buys policy (1 ETH).
+2. User can renew monthly.
+3. When market condition matches → user claims.
+4. Contract pays user automatically.
+
+---
+
+## **Dependencies**
+
+* OpenZeppelin (Ownable, Pausable)
+* Chainlink Price Feeds (AggregatorV3Interface)
+
+---
+
+If you want, I can also format it into a **GitHub-ready README.md** with badges, code blocks, installation steps, and examples.
