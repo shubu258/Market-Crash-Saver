@@ -43,7 +43,7 @@ contract MarketInvest is Pausable, Ownable {
         address user;
         MarketType marketType;
         uint256 depositAmount;
-        uint256 lastDeosited;
+        uint256 lastDeposited;
         bool claimActive;
         uint256 expiry;
     }
@@ -59,7 +59,7 @@ contract MarketInvest is Pausable, Ownable {
     /// @param marketType The MarketType associated with the policy
     /// @param user The address that purchased the policy
     /// @param depositAmount Net amount stored in the policy (after fees)
-    /// @param lastDeosited Timestamp when the policy was created
+    /// @param lastDeposited Timestamp when the policy was created
     /// @param claimActive Whether the policy is active
     /// @param expiry Expiration timestamp of the policy
     event marketPolicyPurchased(
@@ -67,7 +67,7 @@ contract MarketInvest is Pausable, Ownable {
         MarketType marketType,
         address user,
         uint256 depositAmount,
-        uint256 lastDeosited,
+        uint256 lastDeposited,
         bool claimActive,
         uint256 expiry
     );
@@ -76,11 +76,11 @@ contract MarketInvest is Pausable, Ownable {
     /// @param policyId The id of the policy receiving the funds
     /// @param user The policy owner who invested
     /// @param depositAmount Updated depositAmount after the investment
-    /// @param lastDeosited Timestamp when the top-up occurred
+    /// @param lastDeposited Timestamp when the top-up occurred
     /// @param claimActive Policy active flag after the investment
     /// @param expiry Policy expiry timestamp
     event investedInPolicy(
-        uint256 policyId, address user, uint256 depositAmount, uint256 lastDeosited, bool claimActive, uint256 expiry
+        uint256 policyId, address user, uint256 depositAmount, uint256 lastDeposited, bool claimActive, uint256 expiry
     );
 
     /// @notice Emitted when a claim attempt fails because the current market price did not meet the configured threshold
@@ -109,7 +109,6 @@ contract MarketInvest is Pausable, Ownable {
     /// @notice The minimum market price threshold used in claim evaluation (example value in wei)
     uint256 public constant MIN_MARKET_CLAIM = 0.5 ether;
     /// @notice BNB token address used for price feed queries in market crash claims
-    address public constant BNB_ADDRESS = 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE;
 
     /// @notice Minimum water level threshold for natural disaster claims (below this triggers payout)
     uint256 public constant MIN_WWATERFALL = 20;
@@ -117,13 +116,16 @@ contract MarketInvest is Pausable, Ownable {
     uint256 public constant MAX_WATERFALL = 100;
 
     /// @notice Minimum stablecoin peg ratio (0.97 = $0.97) - below this triggers depeg claims
-    uint256 public constant MIN_STABLE_COIN_PEG = 0.97;
-    /// @notice USDT token address used for stablecoin depeg price feed queries
-    address public constant USDT_ADDRESS = 0x3E7d1eAB13ad0104d2750B8863b489D65364e32D;
+    uint256 public constant MIN_STABLE_COIN_PEG = 10;
 
     /// @notice Fee configuration: MONTHLY_FEE expressed in basis points out of TOTAL_BPS
     uint256 public constant MONTHLY_FEE = 100;
     uint256 public constant TOTAL_BPS = 10_000;
+
+    /// @notice BNB token address used for price feed queries in market crash claims
+    address public constant BNB_ADDRESS = 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE;
+    /// @notice USDT token address used for stablecoin depeg price feed queries
+    address public constant USDT_ADDRESS = 0x3E7d1eAB13ad0104d2750B8863b489D65364e32D;
 
     /// @notice Quick lookup mapping to show whether a given address currently has claim rights
     /// @dev This mapping can be used to mute or disable claims for addresses if required by admin logic
@@ -140,15 +142,11 @@ contract MarketInvest is Pausable, Ownable {
      * @dev The constructor validates inputs and assigns `priceFeed`. Ownership is transferred using
      *      the internal `_transferOwnership` call to avoid calling external-onlyOwner functions.
      */
-    constructor(address _aggregator, address _owner) {
+    constructor(address _aggregator, address _owner) Ownable(_owner) {
         require(_aggregator != address(0), "aggregator zero");
         require(_owner != address(0), "owner zero");
 
         priceFeed = AggregatorV3Interface(_aggregator);
-
-        // Transfer ownership to the provided owner address.
-        // Use internal transfer to avoid calling the external onlyOwner-protected function.
-        _transferOwnership(_owner);
     }
 
     /**
@@ -163,12 +161,12 @@ contract MarketInvest is Pausable, Ownable {
      *  - `policyCount` is incremented and used as the policy id; policy stored at `marketPolicy[policyCount]`.
      *  - Emits `marketPolicyPurchased(policyId, marketType, user, depositAmount, lastDeosited, claimActive, expiry)`.
      *
-     * @reverts
-     *  - if `msg.value != MARKET_MONTHLY_SUBSCRIPTION` (exact subscription required)
-     *  - if `expiry <= block.timestamp` (expiry must be in the future)
-     *  - if fee transfer to `owner()` fails
+     * @dev Reverts if inputs are invalid or fee transfer fails. Specifically:
+     *  - when `msg.value != MARKET_MONTHLY_SUBSCRIPTION`
+     *  - when `expiry <= block.timestamp`
+     *  - when fee transfer to `owner()` fails
      */
-    function buyMarketPolicy(uint256 expiry, marketType mType) external payable {
+    function buyMarketPolicyf(uint256 expiry, MarketType mType) external payable {
         address user = msg.sender;
         require(msg.value == MARKET_MONTHLY_SUBSCRIPTION, "Msg.value is not equal to monthly SUBSCRIPTION");
         require(expiry > block.timestamp, "expiry must be in the future");
@@ -176,22 +174,24 @@ contract MarketInvest is Pausable, Ownable {
         uint256 fees = (msg.value * MONTHLY_FEE) / TOTAL_BPS;
         uint256 netAmount = msg.value - fees;
 
-        (bool sentFee,) = payable(owner()).call{value: fees}("");
-        require(sentFee, "fee transfer failed");
-
+        // store state first (effects)
         policyCount++;
 
         marketPolicy[policyCount] = buyMarketPolicy({
-            marketType: marketTypeInfo,
             policyId: policyCount,
             user: user,
+            marketType: mType,
             depositAmount: netAmount,
-            lastDeosited: block.timestamp,
+            lastDeposited: block.timestamp,
             claimActive: true,
             expiry: expiry
         });
 
-        emit marketPolicyPurchased(policyId, marketType, user, netAmount, block.timestamp, true, expiry);
+        // interactions: forward fees to owner
+        (bool sentFee,) = payable(owner()).call{value: fees}("");
+        require(sentFee, "fee transfer failed");
+
+        emit marketPolicyPurchased(policyCount, mType, user, netAmount, block.timestamp, true, expiry);
     }
 
     /**
@@ -217,14 +217,14 @@ contract MarketInvest is Pausable, Ownable {
         (bool sentFee,) = payable(owner()).call{value: fees}("");
         require(sentFee, "fee transfer failed");
 
-        marketPolicy[policyId].depositedAmount += netAmount;
-        marketPolicy[policyId].lastDeosited = block.timestamp;
+        marketPolicy[policyId].depositAmount += netAmount;
+        marketPolicy[policyId].lastDeposited = block.timestamp;
 
         emit investedInPolicy(
-            marketPolicy[policyId].marketType,
+            policyId,
             marketPolicy[policyId].user,
             marketPolicy[policyId].depositAmount,
-            block.timestamp,
+            marketPolicy[policyId].lastDeposited,
             marketPolicy[policyId].claimActive,
             marketPolicy[policyId].expiry
         );
@@ -249,26 +249,33 @@ contract MarketInvest is Pausable, Ownable {
         require(marketPolicy[policyId].user == msg.sender, "not a policy owner");
         require(marketPolicy[policyId].marketType == MarketType.MarketCrash);
 
-        if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
-            (, uint256 price,, uint256 updatedAt,) = priceFeed.latestRoundData(BNB_ADDRESS);
+        uint256 payAmount = 0;
+        if (block.timestamp - marketPolicy[policyId].lastDeposited <= MONTH_TIME) {
+            (, int256 answer,, uint256 updatedAt,) = priceFeed.latestRoundData();
             require(block.timestamp - updatedAt < MONTH_TIME, "NOT A CORRECT TIME TO CLAIM");
+            require(answer > 0, "Price is not correct");
+            uint256 price = uint256(answer);
             if (price < MIN_MARKET_CLAIM) {
                 uint256 amount = marketPolicy[policyId].depositAmount;
-                uint256 payAmount = 2 * amount;
+                payAmount = 2 * amount;
             } else {
                 emit priceNotReachedThreshold(price, MIN_MARKET_CLAIM);
             }
-
-            marketPolicy[policyId].depositAmount = 0;
-            marketPolicy[policyId].claimActive = false;
-        } else {
-            marketPolicy[policyId].claimActive = false;
         }
 
-        (bool success,) = payable(msg.sender).call{value: payAmount}("");
-        require(success, "Pay Failed");
+        // Effects before interactions
+        if (payAmount > 0) {
+            marketPolicy[policyId].depositAmount = 0;
+            marketPolicy[policyId].claimActive = false;
 
-        emit claimed(payAmount);
+            (bool success,) = payable(msg.sender).call{value: payAmount}("");
+            require(success, "Pay Failed");
+
+            emit claimed(payAmount);
+        } else {
+            // If no payout, ensure policy is inactive due to missed subscription or other checks
+            marketPolicy[policyId].claimActive = false;
+        }
     }
 
     /**
@@ -284,24 +291,27 @@ contract MarketInvest is Pausable, Ownable {
         require(marketPolicy[policyId].claimActive == true, "CLAIM NOT ACTIVE");
         require(marketPolicy[policyId].marketType == MarketType.NaturalDisaster);
 
-        if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
+        uint256 payAmount = 0;
+        if (block.timestamp - marketPolicy[policyId].lastDeposited <= MONTH_TIME) {
             if (waterlevel <= MIN_WWATERFALL || waterlevel >= MAX_WATERFALL) {
                 uint256 amount = marketPolicy[policyId].depositAmount;
-                uint256 payAmount = 2 * amount;
-
-                marketPolicy[policyId].depositAmount = 0;
-                marketPolicy[policyId].claimActive = false;
+                payAmount = 2 * amount;
             } else {
                 emit naturalHazardIsNotAchived("Market Hazard Not Arrived");
             }
+        }
+
+        if (payAmount > 0) {
+            marketPolicy[policyId].depositAmount = 0;
+            marketPolicy[policyId].claimActive = false;
+
+            (bool success,) = payable(msg.sender).call{value: payAmount}("");
+            require(success, "pay failed");
+
+            emit claimed(payAmount);
         } else {
             marketPolicy[policyId].claimActive = false;
         }
-
-        (bool ok,) = payable(msg.sender).call{value: payAmount}("");
-        require(success, "pay failed");
-
-        emit claimed(payAmount);
     }
 
     /**
@@ -317,27 +327,31 @@ contract MarketInvest is Pausable, Ownable {
         require(marketPolicy[policyId].user == msg.sender, "not a policy owner");
         require(marketPolicy[policyId].marketType == MarketType.StablePleg);
 
-        if (block.timestamp - marketPolicy[policyId].lastDeosited <= MONTH_TIME) {
-            (, uint256 price,, uint256 updatedAt,) = priceFeed.latestRoundData(USDT_ADDRESS);
+        uint256 payAmount = 0;
+        if (block.timestamp - marketPolicy[policyId].lastDeposited <= MONTH_TIME) {
+            (, int256 answer,, uint256 updatedAt,) = priceFeed.latestRoundData();
             require(block.timestamp - updatedAt < MONTH_TIME, "NOT A CORRECT TIME TO CLAIM");
+            uint256 price = answer > 0 ? uint256(answer) : uint256(0);
 
             if (price < MIN_STABLE_COIN_PEG) {
                 uint256 amount = marketPolicy[policyId].depositAmount;
-                uint256 payAmount = 2 * amount;
+                payAmount = 2 * amount;
             } else {
                 emit priceNotReachedThreshold(price, MIN_STABLE_COIN_PEG);
             }
+        }
 
+        if (payAmount > 0) {
             marketPolicy[policyId].depositAmount = 0;
             marketPolicy[policyId].claimActive = false;
+
+            (bool success,) = payable(msg.sender).call{value: payAmount}("");
+            require(success, "Pay Failed");
+
+            emit claimed(payAmount);
         } else {
             marketPolicy[policyId].claimActive = false;
         }
-
-        (bool success,) = payable(msg.sender).call{value: payAmount}("");
-        require(success, "Pay Failed");
-
-        emit claimed(payAmount);
     }
 
     /**
