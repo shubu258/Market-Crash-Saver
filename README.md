@@ -2,7 +2,14 @@
 
 MarketInvest is a smart contract that lets users buy insurance-like policies against different market risks such as market crashes, natural disasters, and stablecoin depegs. Users pay a monthly subscription and can claim payouts when the configured conditions are met.
 
+<img width="1536" height="1024" alt="ChatGPT Image Dec 3, 2025, 05_35_59 PM" src="https://github.com/user-attachments/assets/252ba432-edb6-4925-be4f-214890f69d34" />
+
+
+<img width="1536" height="1024" alt="ChatGPT Image Dec 3, 2025, 05_32_47 PM" src="https://github.com/user-attachments/assets/4df0fae5-b38d-4b9e-b2dc-5909038ca8bc" />
+
+
 ---
+
 
 ## **Features**
 
